@@ -961,3 +961,155 @@ Arsitektur hybrid ini menggabungkan sistem build berbasis environment dengan pol
 
 > The system successfully eliminates the complexity of managing multiple authentication services AND client-specific logic while maintaining clean architecture, type safety, and centralized configuration!  
 > All client flows are consolidated in a single `config/client.ts` file, solving the "tumpang tindih" (overlapping) folder structure issues. 🎉
+
+
+# Schema Helper Documentation
+
+## Overview
+
+Schema Helper adalah utility untuk menangani berbagai schema tabel DynamoDB secara fleksibel. Sistem
+ini mendukung multiple schema berdasarkan konfigurasi environment.
+
+## Supported Schemas
+
+### 1. EMAIL_SESSION_ID (Default)
+
+- **Partition Key**: `email`
+- **Sort Key**: `sessionId`
+- **Environment Variable**: `MAGICLINK_TABLE_SCHEMA=email_sessionId`
+- **Use Case**: Production schema yang terdetect pada tabel saat ini
+
+### 2. SESSION_ID_ONLY
+
+- **Partition Key**: `sessionId`
+- **Sort Key**: None
+- **Environment Variable**: `MAGICLINK_TABLE_SCHEMA=sessionId`
+- **Use Case**: Simple schema untuk development/testing
+
+### 3. SESSION_ID_DATE
+
+- **Partition Key**: `sessionId`
+- **Sort Key**: `date`
+- **Environment Variable**: `MAGICLINK_TABLE_SCHEMA=sessionId_date`
+- **Use Case**: Time-based partitioning
+
+## Environment Configuration
+
+Tambahkan ke file `.env`:
+
+```bash
+# Current production schema
+MAGICLINK_TABLE_SCHEMA=email_sessionId
+
+# Alternative schemas:
+# MAGICLINK_TABLE_SCHEMA=sessionId
+# MAGICLINK_TABLE_SCHEMA=sessionId_date
+```
+
+## Usage
+
+Schema helper secara otomatis mendeteksi dan menggunakan schema yang benar:
+
+```typescript
+import { detectTableSchema, buildTableKey, validateSchemaParams } from '../utils/schemaHelper';
+
+// Detect current schema
+const schema = detectTableSchema();
+
+// Build correct key for DynamoDB operations
+const key = buildTableKey(schema, {
+  sessionId: 'uuid-here',
+  email: 'user@example.com',
+});
+
+// Validate required parameters
+const validation = validateSchemaParams(schema, { sessionId, email });
+if (!validation.isValid) {
+  throw new Error(`Missing fields: ${validation.missingFields.join(', ')}`);
+}
+```
+
+## Functions Updated
+
+Semua fungsi berikut telah diupdate untuk menggunakan schema helper:
+
+### Service Layer (`dnmMagicLink.ts`)
+
+- ✅ `getSession()` - Auto-detect schema dan build key yang benar
+- ✅ `invalidateSession()` - Support multiple schema dengan validasi
+- ✅ `onConnect()` - Handle WebSocket connection dengan schema yang benar
+
+### Controller Layer (`magicLink.ts`)
+
+- ✅ `request()` - Pass email parameter untuk supersede sessions
+- ✅ `verify()` - Pass email parameter untuk get dan invalidate session
+
+### Utils Layer (`token.ts`)
+
+- ✅ `validateMagicToken()` - Pass email saat invalidate session on error
+
+### WebSocket Layer (`websocket.ts`)
+
+- ✅ `setupWS()` - Extract email dari query parameter
+- ✅ `setupLocalWS()` - Handle email parameter untuk local development
+
+## Client-Side Changes Required
+
+### WebSocket Connection
+
+Update client untuk mengirim email sebagai query parameter:
+
+```javascript
+// Before
+const wsUrl = `wss://your-api.execute-api.region.amazonaws.com/stage?sessionId=${sessionId}`;
+
+// After
+const wsUrl = `wss://your-api.execute-api.region.amazonaws.com/stage?sessionId=${sessionId}&email=${encodeURIComponent(
+  userEmail,
+)}`;
+```
+
+### Local Development
+
+```javascript
+// Local WebSocket URL
+const wsUrl = `ws://localhost:3001?sessionId=${sessionId}&email=${encodeURIComponent(userEmail)}`;
+```
+
+## Migration Strategy
+
+1. **Current State**: Schema sudah terdeteksi sebagai `email_sessionId`
+2. **Default Configuration**: Environment variable default ke `email_sessionId`
+3. **Backward Compatibility**: Jika ingin menggunakan schema lain, ubah environment variable
+4. **Gradual Migration**: Sistem dapat di-switch ke schema berbeda tanpa mengubah kode
+
+## Troubleshooting
+
+### Error: "Missing required fields for schema"
+
+- Pastikan environment variable `MAGICLINK_TABLE_SCHEMA` sesuai dengan schema tabel DynamoDB
+- Untuk schema `email_sessionId`, pastikan email parameter selalu dikirim
+
+### Error: "The provided key element does not match the schema"
+
+- Cek schema tabel di AWS Console
+- Pastikan environment variable `MAGICLINK_TABLE_SCHEMA` benar
+- Gunakan schema detection helper untuk auto-detect
+
+### WebSocket Connection Issues
+
+- Pastikan client mengirim email sebagai query parameter untuk schema `email_sessionId`
+- Cek logs untuk melihat schema yang terdeteksi
+
+## Testing
+
+```bash
+# Build project
+npm run build
+
+# Test dengan schema default (email_sessionId)
+npm run dev
+
+# Test dengan schema berbeda
+MAGICLINK_TABLE_SCHEMA=sessionId npm run dev
+```
